@@ -13,6 +13,9 @@ services:
       - ./logs:/app/logs  # Mount logs directory
       - .:/app  # Mount current directory for hopeful_alphas.json sharing
       - ollama_data:/root/.ollama  # Persist Ollama models
+      - ./.env:/app/.env:ro  # Mount .env file for remote API configuration
+    env_file:
+      - .env  # Load environment variables from .env file
     environment:
       - OLLAMA_HOST=0.0.0.0
       - OLLAMA_ORIGINS=*
@@ -40,6 +43,9 @@ services:
       - ./results:/app/results
       - ./logs:/app/logs
       - .:/app
+      - ./.env:/app/.env:ro  # Mount .env file for remote API configuration
+    env_file:
+      - .env  # Load environment variables from .env file
     environment:
       - PYTHONUNBUFFERED=1
       - NVIDIA_VISIBLE_DEVICES=all
@@ -67,6 +73,9 @@ services:
       - ./results:/app/results
       - ./logs:/app/logs
       - .:/app
+      - ./.env:/app/.env:ro  # Mount .env file for remote API configuration
+    env_file:
+      - .env  # Load environment variables from .env file
     environment:
       - PYTHONUNBUFFERED=1
       - NVIDIA_VISIBLE_DEVICES=all
@@ -94,6 +103,9 @@ services:
       - ./results:/app/results
       - ./logs:/app/logs
       - .:/app
+      - ./.env:/app/.env:ro  # Mount .env file for remote API configuration
+    env_file:
+      - .env  # Load environment variables from .env file
     environment:
       - PYTHONUNBUFFERED=1
       - NVIDIA_VISIBLE_DEVICES=all

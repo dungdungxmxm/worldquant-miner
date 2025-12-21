@@ -30,10 +30,24 @@ class AlphaExpressions(BaseModel):
     expressions: List[str]
 
 class RetryQueue:
-    def __init__(self, generator, max_retries=3, retry_delay=60):
+    """
+    Queue system for retrying failed alpha simulations.
+
+    Handles alphas that fail due to simulation limits by requeueing them
+    with exponential backoff to avoid overwhelming the API.
+    """
+    def __init__(self, generator, max_retries=3, retry_delay=120):
+        """
+        Initialize retry queue.
+
+        Args:
+            generator: Reference to AlphaGenerator instance
+            max_retries: Maximum number of retry attempts (default: 3)
+            retry_delay: Delay in seconds between retries (default: 120)
+        """
         self.queue = Queue()
         self.max_retries = max_retries
-        self.retry_delay = retry_delay
+        self.retry_delay = retry_delay  # Increased from 60 to 120 seconds
         self.generator = generator  # Store reference to generator
         self.worker = Thread(target=self._process_queue, daemon=True)
         self.worker.start()
@@ -66,7 +80,20 @@ class RetryQueue:
             time.sleep(1)  # Prevent busy waiting
 
 class AlphaGenerator:
+    """
+    Main class for generating and testing alpha expressions using Ollama LLM.
+
+    Handles authentication, alpha generation, simulation submission, and result tracking.
+    """
     def __init__(self, credentials_path: str, ollama_url: str = "http://localhost:11434", max_concurrent: int = 2):
+        """
+        Initialize AlphaGenerator.
+
+        Args:
+            credentials_path: Path to WorldQuant Brain credentials file
+            ollama_url: URL of Ollama API endpoint (default: http://localhost:11434)
+            max_concurrent: Maximum concurrent simulations (default: 2)
+        """
         self.sess = requests.Session()
         self.credentials_path = credentials_path  # Store path for reauth
         self.setup_auth(credentials_path)
@@ -78,19 +105,20 @@ class AlphaGenerator:
         self.executor = ThreadPoolExecutor(max_workers=max_concurrent)  # For concurrent simulations
         self.vram_cleanup_interval = 5  # Cleanup every 5 operations for larger batches
         self.operation_count = 0
-        
+
+        # Track logged alphas to prevent duplicates
+        self.logged_alpha_ids = set()  # In-memory set for fast duplicate detection
+
         # Model downgrade tracking
-        self.initial_model = getattr(self, 'model_name', 'deepseek-r1:8b')
+        self.initial_model = getattr(self, 'model_name', 'deepseek-r1:7b')
         self.error_count = 0
         self.max_errors_before_downgrade = 3
         self.model_fleet = [
-            'deepseek-r1:8b',   # Primary model
-            'deepseek-r1:7b',   # First fallback
-            'deepseek-r1:1.5b', # Second fallback
-            'llama3:3b',        # Third fallback
-            'phi3:mini'         # Emergency fallback
+            'deepseek-r1:7b',   # Primary model
         ]
         self.current_model_index = 0
+        self.max_errors_before_downgrade = 999999  # prevent downgrade
+        
         
     def setup_auth(self, credentials_path: str) -> None:
         """Set up authentication with WorldQuant Brain."""
@@ -110,12 +138,34 @@ class AlphaGenerator:
             raise Exception(f"Authentication failed: {response.text}")
     
     def cleanup_vram(self):
-        """Perform VRAM cleanup by forcing garbage collection and waiting."""
+        """
+        Perform VRAM cleanup by forcing garbage collection and clearing CUDA cache.
+
+        This method performs two-stage cleanup:
+        1. Python garbage collection to free unused Python objects
+        2. PyTorch CUDA cache cleanup to free GPU memory
+
+        The cleanup is triggered every `vram_cleanup_interval` operations to prevent
+        VRAM leak from accumulated CUDA tensors and embeddings.
+        """
         try:
             import gc
+            import torch
+
+            # Step 1: Python garbage collection
+            # Free unused Python objects and their associated memory
             gc.collect()
-            logging.info("Performed VRAM cleanup")
-            # Add a small delay to allow GPU memory to be freed
+
+            # Step 2: PyTorch CUDA cache cleanup
+            # Clear CUDA memory cache to free GPU memory
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()  # Wait for all CUDA operations to complete
+                logging.info("Performed VRAM cleanup (Python + CUDA)")
+            else:
+                logging.info("Performed VRAM cleanup (Python only - no CUDA)")
+
+            # Step 3: Small delay to allow GPU memory to be freed
             time.sleep(2)
         except Exception as e:
             logging.warning(f"VRAM cleanup failed: {e}")
@@ -954,23 +1004,60 @@ Return as JSON with expressions array.
             return {"status": "error", "message": str(e)}
 
     def log_hopeful_alpha(self, expression: str, alpha_data: Dict) -> None:
-        """Log promising alphas to a JSON file."""
+        """
+        Log promising alphas to a JSON file with duplicate prevention.
+
+        This function checks for duplicates by both alpha_id and expression
+        to prevent the same alpha from being logged multiple times.
+        Uses file locking for thread-safe operations.
+
+        Args:
+            expression: Alpha expression string
+            alpha_data: Dictionary containing alpha metadata (id, fitness, etc.)
+        """
         log_file = 'hopeful_alphas.json'
-        
-        # Load existing data
+
+        # Step 1: Extract alpha_id for duplicate checking
+        alpha_id = alpha_data.get("id", "unknown")
+
+        # Step 2: Check in-memory set first (fast duplicate detection)
+        if alpha_id in self.logged_alpha_ids:
+            logging.info(f"Alpha {alpha_id} already logged (in-memory check), skipping duplicate")
+            return
+
+        # Step 3: Check expression to catch duplicates with different IDs
+        # (This can happen if the same expression is submitted at different times)
+        if expression in [entry.get("expression") for entry in getattr(self, '_logged_expressions_cache', [])]:
+            logging.info(f"Expression already logged, skipping duplicate: {expression[:50]}...")
+            return
+
+        # Step 4: Load existing data from file
         existing_data = []
         if os.path.exists(log_file):
             try:
                 with open(log_file, 'r') as f:
                     existing_data = json.load(f)
             except json.JSONDecodeError:
-                print(f"Warning: Could not parse {log_file}, starting fresh")
-        
-        # Add new alpha with timestamp
+                logging.warning(f"Could not parse {log_file}, starting fresh")
+
+        # Step 5: Check file data for duplicates (in case of process restart)
+        for existing_entry in existing_data:
+            if existing_entry.get("alpha_id") == alpha_id:
+                logging.info(f"Alpha {alpha_id} already logged (file check), skipping duplicate")
+                # Add to in-memory set to speed up future checks
+                self.logged_alpha_ids.add(alpha_id)
+                return
+            # Also check by expression (in case alpha_id is different but expression is same)
+            if existing_entry.get("expression") == expression:
+                logging.info(f"Expression already logged (file check), skipping duplicate: {expression[:50]}...")
+                self.logged_alpha_ids.add(alpha_id)
+                return
+
+        # Step 6: Create new entry
         entry = {
             "expression": expression,  # Store just the expression string
             "timestamp": int(time.time()),
-            "alpha_id": alpha_data.get("id", "unknown"),
+            "alpha_id": alpha_id,
             "fitness": alpha_data.get("is", {}).get("fitness"),
             "sharpe": alpha_data.get("is", {}).get("sharpe"),
             "turnover": alpha_data.get("is", {}).get("turnover"),
@@ -978,14 +1065,38 @@ Return as JSON with expressions array.
             "grade": alpha_data.get("grade", "UNKNOWN"),
             "checks": alpha_data.get("is", {}).get("checks", [])
         }
-        
+
+        # Step 7: Append new entry
         existing_data.append(entry)
-        
-        # Save updated data
-        with open(log_file, 'w') as f:
-            json.dump(existing_data, f, indent=2)
-        
-        print(f"Logged promising alpha to {log_file}")
+
+        # Step 8: Save with file locking for thread safety
+        try:
+            import fcntl
+            with open(log_file, 'w') as f:
+                # Acquire exclusive lock
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                try:
+                    json.dump(existing_data, f, indent=2)
+                    logging.info(f"Logged promising alpha to {log_file}: {alpha_id}")
+                finally:
+                    # Release lock
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        except ImportError:
+            # fcntl not available on Windows, fall back to regular write
+            logging.warning("fcntl not available, file locking disabled (Windows system)")
+            with open(log_file, 'w') as f:
+                json.dump(existing_data, f, indent=2)
+            logging.info(f"Logged promising alpha to {log_file}: {alpha_id}")
+
+        # Step 9: Update in-memory tracking
+        self.logged_alpha_ids.add(alpha_id)
+
+        # Step 10: Update expression cache (keep last 1000 to prevent memory bloat)
+        if not hasattr(self, '_logged_expressions_cache'):
+            self._logged_expressions_cache = []
+        self._logged_expressions_cache.append({"expression": expression})
+        if len(self._logged_expressions_cache) > 1000:
+            self._logged_expressions_cache = self._logged_expressions_cache[-1000:]
 
     def get_results(self) -> List[Dict]:
         """Get all processed results including retried alphas."""
@@ -1119,15 +1230,15 @@ def main():
                       help='Directory to save results (default: ./results)')
     parser.add_argument('--batch-size', type=int, default=10,
                       help='Number of alpha factors to simulate per batch (default: 10)')
-    parser.add_argument('--sleep-time', type=int, default=60,
-                      help='Sleep time between batches in seconds (default: 60)')
+    parser.add_argument('--sleep-time', type=int, default=90,
+                      help='Sleep time between batches in seconds (default: 90, increased from 60 to reduce rate limiting)')
     parser.add_argument('--log-level', type=str, default='INFO',
                       choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                       help='Set the logging level (default: INFO)')
     parser.add_argument('--ollama-url', type=str, default='http://localhost:11434',
                       help='Ollama API URL (default: http://localhost:11434)')
-    parser.add_argument('--ollama-model', type=str, default='deepseek-r1:8b',
-                                             help='Ollama model to use (default: deepseek-r1:8b for RTX A4000)')
+    parser.add_argument('--ollama-model', type=str, default='deepseek-r1:7b',
+                                             help='Ollama model to use (default: deepseek-r1:7b for RTX A4000)')
     parser.add_argument('--max-concurrent', type=int, default=5,
                       help='Maximum concurrent simulations (default: 5)')
     
@@ -1138,8 +1249,8 @@ def main():
         level=getattr(logging, args.log_level),
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.StreamHandler(),  # Log to console
-            logging.FileHandler('alpha_generator_ollama.log')  # Also log to file
+            logging.StreamHandler(),
+            logging.FileHandler("alpha_generator_ollama.log")
         ]
     )
     
@@ -1147,8 +1258,25 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     
     try:
-        # Initialize alpha generator with Ollama
-        generator = AlphaGenerator(args.credentials, args.ollama_url, args.max_concurrent)
+        # Step 1: Check if enhanced features are enabled via environment variables
+        use_rag = os.getenv('USE_RAG', 'true').lower() == 'true'
+        use_smart_config = os.getenv('USE_SMART_CONFIG', 'true').lower() == 'true'
+        use_feedback_loop = os.getenv('USE_FEEDBACK_LOOP', 'true').lower() == 'true'
+
+        # Step 2: Initialize alpha generator (enhanced or standard)
+        if use_rag:
+            try:
+                from enhanced_alpha_generator import EnhancedAlphaGenerator
+                generator = EnhancedAlphaGenerator(args.credentials, args.ollama_url, args.max_concurrent)
+                logging.info("✅ Using EnhancedAlphaGenerator with RAG system")
+            except ImportError as e:
+                logging.warning(f"⚠️ Could not import EnhancedAlphaGenerator: {e}")
+                logging.warning("⚠️ Falling back to standard AlphaGenerator")
+                generator = AlphaGenerator(args.credentials, args.ollama_url, args.max_concurrent)
+        else:
+            generator = AlphaGenerator(args.credentials, args.ollama_url, args.max_concurrent)
+            logging.info("Using standard AlphaGenerator")
+
         generator.model_name = args.ollama_model  # Set the model name
         generator.initial_model = args.ollama_model  # Set the initial model for reset
         
@@ -1168,12 +1296,13 @@ def main():
             try:
                 logging.info(f"\nProcessing batch #{batch_number}")
                 logging.info("-" * 50)
-                
-                # Generate 100 alpha ideas using Ollama (regardless of batch_size)
-                alpha_ideas = generator.generate_alpha_ideas_with_ollama(data_fields, operators, 100)
+
+                # Step 1: Generate alpha ideas using Ollama
+                # Reduced from 100 to 25 to improve quality and reduce API overhead
+                alpha_ideas = generator.generate_alpha_ideas_with_ollama(data_fields, operators, 25)
                 logging.info(f"Generated {len(alpha_ideas)} alpha ideas, will process in batches of {args.batch_size}")
-                
-                # Process alpha ideas in smaller batches for simulation
+
+                # Step 2: Process alpha ideas in smaller batches for simulation
                 total_batch_successful = 0
                 for i in range(0, len(alpha_ideas), args.batch_size):
                     batch = alpha_ideas[i:i + args.batch_size]
@@ -1181,10 +1310,14 @@ def main():
                     batch_successful = generator.test_alpha_batch(batch)
                     total_batch_successful += batch_successful
                     logging.info(f"Batch {i//args.batch_size + 1} completed: {batch_successful} successful")
-                
+
                 total_successful += total_batch_successful
-                
-                # Perform VRAM cleanup every few batches
+
+                # Step 3: Clear results to prevent memory bloat
+                generator.results = []
+                logging.debug("Cleared results list to prevent memory accumulation")
+
+                # Step 4: Perform VRAM cleanup every few batches
                 generator.operation_count += 1
                 if generator.operation_count % generator.vram_cleanup_interval == 0:
                     generator.cleanup_vram()

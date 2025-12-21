@@ -27,6 +27,30 @@ class AlphaExpressionMiner:
         self.sess = requests.Session()
         self.credentials_path = credentials_path  # Store for reauth
         self.setup_auth(credentials_path)
+
+        # Step 1: Initialize improvement modules based on environment variables
+        use_smart_config = os.getenv('USE_SMART_CONFIG', 'false').lower() == 'true'
+        use_feedback_loop = os.getenv('USE_FEEDBACK_LOOP', 'false').lower() == 'true'
+
+        # Step 2: Initialize Smart Config Selector if enabled
+        self.smart_config_selector = None
+        if use_smart_config:
+            try:
+                from smart_config_selector import SmartConfigSelector
+                self.smart_config_selector = SmartConfigSelector()
+                logger.info("✅ Initialized Smart Config Selector")
+            except ImportError as e:
+                logger.warning(f"⚠️ Could not import SmartConfigSelector: {e}")
+
+        # Step 3: Initialize Feedback Loop System if enabled
+        self.feedback_loop = None
+        if use_feedback_loop:
+            try:
+                from feedback_loop_system import FeedbackLoopSystem
+                self.feedback_loop = FeedbackLoopSystem()
+                logger.info("✅ Initialized Feedback Loop System")
+            except ImportError as e:
+                logger.warning(f"⚠️ Could not import FeedbackLoopSystem: {e}")
         
         # Define the simulation parameter choices based on the API schema
         self.simulation_choices = {
@@ -350,8 +374,15 @@ class AlphaExpressionMiner:
             
             logger.info(f"Generated {len(configs)} configurations for region {target_region}")
             logger.info(f"This represents ALL possible combinations for the specified region")
+
+            # Step 4: Apply Smart Config Selector if enabled
+            if self.smart_config_selector:
+                logger.info("Applying Smart Config Selector to reduce configurations...")
+                configs = self.smart_config_selector.select_top_configs(configs, top_k=50)
+                logger.info(f"✅ Reduced to {len(configs)} most promising configurations")
+
             return configs
-        
+
         # Original logic for multiple regions (handpicked approach)
         # Start with a base configuration
         base_config = {
@@ -418,6 +449,13 @@ class AlphaExpressionMiner:
                 configs.append(config)
         
         logger.info(f"Generated {len(configs)} simulation configurations")
+
+        # Step 5: Apply Smart Config Selector if enabled (for multi-region configs)
+        if self.smart_config_selector:
+            logger.info("Applying Smart Config Selector to reduce configurations...")
+            configs = self.smart_config_selector.select_top_configs(configs, top_k=50)
+            logger.info(f"✅ Reduced to {len(configs)} most promising configurations")
+
         return configs
 
     def save_configurations_to_file(self, configs: List[Dict], filename: str = "simulation_configs.json"):
@@ -644,7 +682,9 @@ class AlphaExpressionMiner:
                                             sleep(wait_time)
                                         else:
                                             logger.warning(f"Max retries reached ({max_retries}), giving up on {len(simulation_queue)} remaining simulations")
-                                            logger.warning(f"Failed simulations: {[f'alpha {sim['alpha_idx']+1}, config {sim['config_idx']+1}' for sim in simulation_queue]}")
+                                            # Fix: Use double quotes for outer f-string to avoid conflict with inner quotes
+                                            failed_sims = [f"alpha {sim['alpha_idx']+1}, config {sim['config_idx']+1}" for sim in simulation_queue]
+                                            logger.warning(f"Failed simulations: {failed_sims}")
                                 
                                 # Clear the queue after processing
                                 simulation_queue.clear()
@@ -689,7 +729,48 @@ class AlphaExpressionMiner:
             logger.info(f"Monitoring {len(progress_urls)} simulations...")
             all_results = self._monitor_pool_progress(progress_urls, alpha_mapping)
             logger.info(f"All simulations completed with {len(all_results)} successful results")
-        
+
+            # Step 6: Track results in improvement modules
+            if self.smart_config_selector or self.feedback_loop:
+                logger.info("Tracking results in improvement modules...")
+                for result in all_results:
+                    try:
+                        # Extract result data
+                        alpha_expr = result.get('expression', '')
+                        config = result.get('config', {})
+                        sim_result = result.get('result', {})
+
+                        # Get fitness from result
+                        fitness = None
+                        if isinstance(sim_result, dict):
+                            result_data = sim_result.get('result', {})
+                            if isinstance(result_data, dict):
+                                metrics = result_data.get('metrics', {})
+                                if isinstance(metrics, dict):
+                                    fitness = metrics.get('fitness')
+
+                        # Track in Smart Config Selector
+                        if self.smart_config_selector and fitness is not None:
+                            is_success = fitness > 0.5
+                            self.smart_config_selector.record_result(config, is_success, fitness)
+
+                        # Track in Feedback Loop
+                        if self.feedback_loop and fitness is not None:
+                            if fitness > 0.5:
+                                self.feedback_loop.record_success(alpha_expr, fitness, config)
+                            else:
+                                self.feedback_loop.record_failure(alpha_expr, "Low fitness", config)
+                    except Exception as e:
+                        logger.warning(f"Error tracking result in improvement modules: {e}")
+
+                # Save histories
+                if self.smart_config_selector:
+                    self.smart_config_selector.save_history()
+                if self.feedback_loop:
+                    self.feedback_loop.save_feedback()
+
+                logger.info("✅ Results tracked in improvement modules")
+
         logger.info(f"Multi-simulate batch complete: {len(all_results)} successful simulations")
         return all_results
 

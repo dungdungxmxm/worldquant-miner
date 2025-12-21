@@ -12,7 +12,7 @@ if errorlevel 1 (
 )
 
 REM Check if NVIDIA Docker runtime is available
-docker run --rm --gpus all nvidia/cuda:12.1-base-ubuntu22.04 nvidia-smi >nul 2>&1
+docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi >nul 2>&1
 if errorlevel 1 (
     echo ⚠️  NVIDIA Docker runtime not detected. GPU acceleration may not work.
     echo    Make sure you have NVIDIA Docker installed and configured.
@@ -82,6 +82,67 @@ if not errorlevel 1 (
     echo.
     echo 🔍 GPU Status:
     docker-compose -f docker-compose.gpu.yml exec naive-ollma nvidia-smi 2>nul || echo "GPU not detected in container"
+
+    docker exec naive-ollma-gpu-consultant python apply_all_improvements.py --phase 3
+    docker-compose -f docker-compose.gpu.yml restart
+
+    echo.
+    echo ⏳ Waiting for system to initialize (60 seconds)...
+    timeout /t 60 /nobreak >nul
+
+    echo.
+    echo ============================================================
+    echo 🔍 IMPROVEMENT MODULES VERIFICATION
+    echo ============================================================
+    echo.
+
+    REM Check RAG System
+    echo Checking RAG System...
+    docker exec naive-ollma-gpu-consultant grep -q "Using EnhancedAlphaGenerator" /app/alpha_generator_ollama.log 2>nul
+    if %errorlevel% equ 0 (
+        echo ✅ RAG System: ACTIVE
+    ) else (
+        echo ❌ RAG System: NOT DETECTED ^(may need more time to initialize^)
+    )
+
+    REM Check Smart Config Selector
+    echo Checking Smart Config Selector...
+    docker exec naive-ollma-gpu-consultant grep -q "Initialized Smart Config Selector" /app/alpha_miner.log 2>nul
+    if %errorlevel% equ 0 (
+        echo ✅ Smart Config Selector: ACTIVE
+    ) else (
+        echo ❌ Smart Config Selector: NOT DETECTED ^(may need more time to initialize^)
+    )
+
+    REM Check Feedback Loop System
+    echo Checking Feedback Loop System...
+    docker exec naive-ollma-gpu-consultant grep -q "Initialized Feedback Loop System" /app/alpha_miner.log 2>nul
+    if %errorlevel% equ 0 (
+        echo ✅ Feedback Loop System: ACTIVE
+    ) else (
+        echo ❌ Feedback Loop System: NOT DETECTED ^(may need more time to initialize^)
+    )
+
+    echo.
+    echo ============================================================
+    echo 🖥️  GPU STATUS
+    echo ============================================================
+    docker exec naive-ollma-gpu-consultant nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu --format=csv,noheader 2>nul || echo "GPU not detected"
+
+    echo.
+    echo ============================================================
+    echo 📊 SYSTEM SUMMARY
+    echo ============================================================
+    echo All improvement modules should be initialized within 1-2 minutes.
+    echo If any module shows NOT DETECTED, wait a few minutes and check logs:
+    echo   docker logs -f naive-ollma-gpu-consultant
+    echo.
+    echo To verify modules manually:
+    echo   docker exec naive-ollma-gpu-consultant grep "EnhancedAlphaGenerator" /app/alpha_generator_ollama.log
+    echo   docker exec naive-ollma-gpu-consultant grep "Smart Config" /app/alpha_miner.log
+    echo   docker exec naive-ollma-gpu-consultant grep "Feedback Loop" /app/alpha_miner.log
+    echo.
+
 ) else (
     echo ❌ Services failed to start. Check logs:
     docker-compose -f docker-compose.gpu.yml logs

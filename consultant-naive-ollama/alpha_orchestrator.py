@@ -46,7 +46,7 @@ class ModelFleetManager:
         # Model fleet ordered by priority (largest to smallest)
         # Optimized for RTX A4000 (16GB VRAM) with DeepSeek-R1 reasoning models
         self.model_fleet = [
-            ModelInfo("deepseek-r1:8b", 5200, 1, "DeepSeek-R1 8B - Reasoning model (RTX A4000 optimized)"),
+            ModelInfo("deepseek-r1:7b", 5200, 1, "DeepSeek-R1 8B - Reasoning model (RTX A4000 optimized)"),
             ModelInfo("deepseek-r1:7b", 4700, 2, "DeepSeek-R1 7B - Reasoning model"),
             ModelInfo("deepseek-r1:1.5b", 1100, 3, "DeepSeek-R1 1.5B - Reasoning model"),
             ModelInfo("llama3:3b", 2048, 4, "Llama 3.2 3B - Fallback model"),
@@ -285,7 +285,7 @@ class AlphaOrchestrator:
         self.log_monitoring_active = False
         self.log_monitor_thread = None
         self.last_log_activity = time.time()
-        self.log_inactivity_timeout = 40  # 5 minutes of inactivity triggers reset
+        self.log_inactivity_timeout = 300  # 5 minutes of inactivity triggers reset
         
     def setup_auth(self, credentials_path: str) -> None:
         """Set up authentication with WorldQuant Brain."""
@@ -359,7 +359,7 @@ class AlphaOrchestrator:
     def stop_log_monitoring(self):
         """Stop log monitoring."""
         self.log_monitoring_active = False
-        if self.log_monitor_thread:
+        if self.log_monitor_thread and threading.current_thread() != self.log_monitor_thread:
             self.log_monitor_thread.join(timeout=5)
         logger.info("Stopped log monitoring")
 
@@ -379,7 +379,10 @@ class AlphaOrchestrator:
                     if time_since_activity > self.log_inactivity_timeout:
                         logger.warning(f"Log inactivity detected! No activity for {time_since_activity/60:.1f} minutes")
                         logger.warning("Triggering application reset due to log inactivity")
-                        self._trigger_log_inactivity_reset()
+                        threading.Thread(
+                            target=self._trigger_log_inactivity_reset,
+                            daemon=True
+                        ).start()
                         break
                     else:
                         remaining_time = self.log_inactivity_timeout - time_since_activity
@@ -907,8 +910,8 @@ def main():
                       help='Maximum concurrent simulations (default: 5)')
     parser.add_argument('--restart-interval', type=int, default=30,
                       help='Restart interval in minutes (default: 30)')
-    parser.add_argument('--ollama-model', type=str, default='deepseek-r1:8b',
-                      help='Ollama model to use (default: deepseek-r1:8b)')
+    parser.add_argument('--ollama-model', type=str, default='deepseek-r1:7b',
+                      help='Ollama model to use (default: deepseek-r1:7b)')
     parser.add_argument('--log-timeout', type=int, default=40,
                       help='Log inactivity timeout in seconds before reset (default: 300)')
     
@@ -939,7 +942,7 @@ def main():
         elif args.mode == 'submitter':
             orchestrator.run_alpha_submitter(args.batch_size)
         elif args.mode == 'generator':
-            orchestrator.run_alpha_generator(args.batch_size)
+            orchestrator.run_alpha_generator(args.batch_size, 10)
         elif args.mode == 'fleet-status':
             status = orchestrator.get_model_fleet_status()
             print(json.dumps(status, indent=2))

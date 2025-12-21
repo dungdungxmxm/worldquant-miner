@@ -5,6 +5,11 @@ credential.example.txt
 *.pem
 *.p12
 
+# Environment variables (contains API keys)
+.env
+.env.local
+.env.*.local
+
 # Results and logs
 results/
 logs/

@@ -14,9 +14,9 @@ sleep 10
 
 # Pull DeepSeek-R1 model optimized for RTX A4000 (16GB VRAM)
 echo "Pulling DeepSeek-R1 model for RTX A4000..."
-if ollama pull deepseek-r1:8b; then
-    echo "Using deepseek-r1:8b model (RTX A4000 optimized - 5.2GB)"
-    MODEL_NAME="deepseek-r1:8b"
+if ollama pull deepseek-r1:7b; then
+    echo "Using deepseek-r1:7b model (RTX A4000 optimized - 5.2GB)"
+    MODEL_NAME="deepseek-r1:7b"
 elif ollama pull deepseek-r1:7b; then
     echo "Using deepseek-r1:7b model (fallback - 4.7GB)"
     MODEL_NAME="deepseek-r1:7b"

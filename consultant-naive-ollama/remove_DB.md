@@ -1,0 +1,1 @@
+docker volume rm consultant-naive-ollama_qdrant_storage
