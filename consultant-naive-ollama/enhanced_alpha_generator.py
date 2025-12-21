@@ -109,12 +109,14 @@ class EnhancedAlphaGenerator(AlphaGenerator):
             }
 
             # Step 2c: Add to RAG database (handles duplicate detection internally)
-            self.rag_system.add_alpha_to_database(alpha_dict)
+            was_added = self.rag_system.add_alpha_to_database(alpha_dict)
 
             # Step 2d: Log success for debugging
-            logger.info(f"✅ Added successful alpha to RAG database: {expression[:50]}...")
-            logger.debug(f"   Alpha ID: {alpha_dict['alpha_id']}, Fitness: {alpha_dict['fitness']:.3f}, Sharpe: {alpha_dict['sharpe']:.3f}")
-
+            if was_added:
+                logger.info(f"✅ Added successful alpha to RAG database: {expression[:50]}...")
+                logger.debug(f"   Alpha ID: {alpha_dict['alpha_id']}, Fitness: {alpha_dict['fitness']:.3f}, Sharpe: {alpha_dict['sharpe']:.3f}")
+            else:
+                logger.debug(f"⏭️  Alpha already in RAG database, skipped: {expression[:50]}...")
         except Exception as e:
             # Step 3: Handle errors gracefully without breaking the alpha logging flow
             # Even if RAG database update fails, the alpha is still logged to JSON file

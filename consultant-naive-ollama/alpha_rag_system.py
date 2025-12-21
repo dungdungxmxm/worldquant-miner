@@ -38,7 +38,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger()
 
 class AlphaRAGSystem:
     """
@@ -501,11 +501,11 @@ class AlphaRAGSystem:
         for existing_alpha in self.alpha_database:
             if existing_alpha.get('expression') == expression:
                 logger.info(f"Alpha expression already in database, skipping duplicate: {expression[:50]}...")
-                return
+                return False
             # Also check by alpha_id
             if alpha_id and existing_alpha.get('alpha_id') == alpha_id:
                 logger.info(f"Alpha ID {alpha_id} already in database, skipping duplicate")
-                return
+                return False
 
         # Step 2: Add to in-memory database (no duplicates)
         self.alpha_database.append(alpha)
@@ -519,6 +519,7 @@ class AlphaRAGSystem:
             if len(self.alpha_database) % 10 == 0:
                 self.build_vector_index()
                 logger.info(f"Updated TF-IDF index with {len(self.alpha_database)} alphas")
+        return True
 
     def _add_to_qdrant(self, alpha: Dict) -> None:
         """
@@ -568,6 +569,17 @@ class AlphaRAGSystem:
                 points=[point]
             )
             logger.info(f"Upserted alpha to Qdrant (ID: {point_id}): {expression[:50]}...")
+            
+            # Add verification
+            try:
+                retrieved = self.qdrant_client.retrieve(
+                    collection_name=self.collection_name,
+                    ids=[point_id]
+                )
+                if retrieved:
+                    logger.debug(f"✓ Verified alpha {point_id} exists in Qdrant")
+            except Exception as e:
+                logger.error(f"❌ Failed to verify alpha in Qdrant: {e}")
 
             # Step 4: Cleanup embedding cache periodically
             # Increment counter and cleanup every 10 alphas to prevent VRAM leak
