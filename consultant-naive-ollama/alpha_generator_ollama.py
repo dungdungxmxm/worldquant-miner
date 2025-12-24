@@ -609,7 +609,7 @@ Return as JSON with expressions array.
             logging.info(f"Alpha expression: {alpha}")
         
         # Submit alphas in smaller chunks to respect concurrent limits
-        max_concurrent = self.executor._max_workers
+        max_concurrent = 2
         submitted = 0
         queued = 0
         

@@ -89,41 +89,6 @@ class EnhancedAlphaGenerator(AlphaGenerator):
         # This maintains backward compatibility and ensures the alpha is persisted to disk
         super().log_hopeful_alpha(expression, alpha_data)
 
-        # Step 2: Add to RAG database for future context retrieval
-        # This enables the RAG system to learn from newly discovered successful alphas
-        try:
-            # Step 2a: Extract relevant fields from alpha_data
-            # The alpha_data structure contains nested metrics under 'is' (in-sample) key
-            is_metrics = alpha_data.get('is', {})
-
-            # Step 2b: Build alpha dictionary with all necessary fields
-            alpha_dict = {
-                'expression': expression,
-                'alpha_id': alpha_data.get('id', ''),
-                'fitness': is_metrics.get('fitness', 0),
-                'sharpe': is_metrics.get('sharpe', 0),
-                'turnover': is_metrics.get('turnover', 0),
-                'returns': is_metrics.get('returns', 0),
-                'timestamp': time.time(),
-                'grade': alpha_data.get('grade', '')
-            }
-
-            # Step 2c: Add to RAG database (handles duplicate detection internally)
-            was_added = self.rag_system.add_alpha_to_database(alpha_dict)
-
-            # Step 2d: Log success for debugging
-            if was_added:
-                logger.info(f"✅ Added successful alpha to RAG database: {expression[:50]}...")
-                logger.debug(f"   Alpha ID: {alpha_dict['alpha_id']}, Fitness: {alpha_dict['fitness']:.3f}, Sharpe: {alpha_dict['sharpe']:.3f}")
-            else:
-                logger.debug(f"⏭️  Alpha already in RAG database, skipped: {expression[:50]}...")
-        except Exception as e:
-            # Step 3: Handle errors gracefully without breaking the alpha logging flow
-            # Even if RAG database update fails, the alpha is still logged to JSON file
-            logger.error(f"❌ Failed to add alpha to RAG database: {e}")
-            logger.debug(f"   Expression: {expression[:100]}...")
-            logger.debug(f"   Error details: {type(e).__name__}: {str(e)}")
-
     def generate_enhanced_prompt(self, data_fields: List[Dict], operators: List[Dict],
                                  target_count: int = 50) -> str:
         """

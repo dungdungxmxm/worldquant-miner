@@ -7,6 +7,7 @@ import os
 from itertools import product
 import requests
 import argparse
+from alpha_rag_system import AlphaRAGSystem
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,6 +21,9 @@ logging.basicConfig(
 class MachineMiner:
     def __init__(self, username: str, password: str):
         self.brain = ml.WorldQuantBrain(username, password)
+        
+        self.rag_system = AlphaRAGSystem()
+        logging.info("Initialized RAG system in MachineMiner")
         self.alpha_bag = []
         self.gold_bag = []
         
@@ -103,6 +107,31 @@ class MachineMiner:
                 
                 # Save to file
                 self._save_result(alpha, result)
+                try:
+                    alpha_dict = {
+                        'expression': alpha,
+                        'fitness': is_data["fitness"],
+                        'sharpe': is_data["sharpe"],
+                        'turnover': is_data["turnover"],
+                        'returns': is_data["returns"],
+                        'timestamp': time.time(),
+                    }
+
+                    # Step 2c: Add to RAG database (handles duplicate detection internally)
+                    was_added = self.rag_system.add_alpha_to_database(alpha_dict)
+
+                    # Step 2d: Log success for debugging
+                    if was_added:
+                        logging.info(f"✅ Added successful alpha to RAG database: {alpha[:50]}...")
+                        logging.debug(f"   Alpha ID: {alpha_dict['alpha_id']}, Fitness: {alpha_dict['fitness']:.3f}, Sharpe: {alpha_dict['sharpe']:.3f}")
+                    else:
+                        logging.debug(f"⏭️  Alpha already in RAG database, skipped: {alpha[:50]}...")
+                except Exception as e:
+                    # Step 3: Handle errors gracefully without breaking the alpha logging flow
+                    # Even if RAG database update fails, the alpha is still logged to JSON file
+                    logging.error(f"❌ Failed to add alpha to RAG database: {e}")
+                    logging.debug(f"   Expression: {alpha[:100]}...")
+                    logging.debug(f"   Error details: {type(e).__name__}: {str(e)}")
                 return True
                 
             return False

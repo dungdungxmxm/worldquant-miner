@@ -9,6 +9,7 @@ from typing import List, Dict, Tuple
 import time
 import logging
 from itertools import product
+from alpha_rag_system import AlphaRAGSystem
 
 # Configure logging at the top of the file
 logging.basicConfig(
@@ -28,6 +29,9 @@ class AlphaExpressionMiner:
         self.credentials_path = credentials_path  # Store for reauth
         self.setup_auth(credentials_path)
 
+        self.rag_system = AlphaRAGSystem()
+        logger.info("Initialized RAG system in AlphaExpressionMiner")
+        
         # Step 1: Initialize improvement modules based on environment variables
         use_smart_config = os.getenv('USE_SMART_CONFIG', 'false').lower() == 'true'
         use_feedback_loop = os.getenv('USE_FEEDBACK_LOOP', 'false').lower() == 'true'
@@ -493,7 +497,7 @@ class AlphaExpressionMiner:
         
         return summary
 
-    def test_alpha_batch(self, alpha_expressions: List[str], config_filename: str = "simulation_configs.json", target_region: str = None, max_concurrent: int = 10) -> List[Dict]:
+    def test_alpha_batch(self, alpha_expressions: List[str], config_filename: str = "simulation_configs.json", target_region: str = None, max_concurrent: int = 2) -> List[Dict]:
         """Test multiple alpha expressions using multi_simulate approach with different configurations."""
         logger.info(f"Testing batch of {len(alpha_expressions)} alphas using multi_simulate with different configurations")
         
@@ -742,32 +746,60 @@ class AlphaExpressionMiner:
 
                         # Get fitness from result
                         fitness = None
+                        turnover = None
+                        sharpe = None
+                        returns = None
                         if isinstance(sim_result, dict):
                             result_data = sim_result.get('result', {})
                             if isinstance(result_data, dict):
                                 metrics = result_data.get('metrics', {})
                                 if isinstance(metrics, dict):
                                     fitness = metrics.get('fitness')
+                                    turnover = metrics.get('turnover')
+                                    sharpe = metrics.get('sharpe')
+                                    returns = metrics.get('returns')
 
                         # Track in Smart Config Selector
                         if self.smart_config_selector and fitness is not None:
-                            is_success = fitness > 0.5
-                            self.smart_config_selector.record_result(config, is_success, fitness)
+                            is_success = fitness > 1
+                            self.smart_config_selector.update_config_stats(config, fitness, is_success)
 
                         # Track in Feedback Loop
                         if self.feedback_loop and fitness is not None:
-                            if fitness > 0.5:
-                                self.feedback_loop.record_success(alpha_expr, fitness, config)
+                            if fitness > 1:
+                                self.feedback_loop.analyze_success(result)
                             else:
-                                self.feedback_loop.record_failure(alpha_expr, "Low fitness", config)
+                                self.feedback_loop.analyze_failure(result, "low fitness")
+                        
+                        db_condition = sharpe > 1.25 and turnover > 0.01 and turnover < 0.7 and fitness >= 1.0
+                        if db_condition:
+                            try:
+                                alpha_dict = {
+                                    'expression': alpha_expr,
+                                    'fitness': fitness,
+                                    'sharpe': sharpe,
+                                    'turnover': turnover,
+                                    'returns': returns,
+                                    'timestamp': time.time(),
+                                }
+
+                                # Step 2c: Add to RAG database (handles duplicate detection internally)
+                                was_added = self.rag_system.add_alpha_to_database(alpha_dict)
+
+                                # Step 2d: Log success for debugging
+                                if was_added:
+                                    logger.info(f"✅ Added successful alpha to RAG database: {alpha_expr[:50]}...")
+                                    logger.debug(f"   Alpha ID: {alpha_dict['alpha_id']}, Fitness: {alpha_dict['fitness']:.3f}, Sharpe: {alpha_dict['sharpe']:.3f}")
+                                else:
+                                    logger.debug(f"⏭️  Alpha already in RAG database, skipped: {alpha_expr[:50]}...")
+                            except Exception as e:
+                                # Step 3: Handle errors gracefully without breaking the alpha logging flow
+                                # Even if RAG database update fails, the alpha is still logged to JSON file
+                                logger.error(f"❌ Failed to add alpha to RAG database: {e}")
+                                logger.debug(f"   Expression: {alpha_expr[:100]}...")
+                                logger.debug(f"   Error details: {type(e).__name__}: {str(e)}")
                     except Exception as e:
                         logger.warning(f"Error tracking result in improvement modules: {e}")
-
-                # Save histories
-                if self.smart_config_selector:
-                    self.smart_config_selector.save_history()
-                if self.feedback_loop:
-                    self.feedback_loop.save_feedback()
 
                 logger.info("✅ Results tracked in improvement modules")
 

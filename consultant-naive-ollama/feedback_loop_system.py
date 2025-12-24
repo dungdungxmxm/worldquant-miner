@@ -118,10 +118,20 @@ class FeedbackLoopSystem:
             alpha: Alpha dictionary with expression and metrics
             reason: Reason for failure (low_fitness, error, timeout, etc.)
         """
-        expression = alpha.get('expression', '')
-        fitness = alpha.get('fitness', 0)
-        model = alpha.get('model', 'unknown')
+        alpha_expr = alpha.get('expression', '')
+        config = alpha.get('config', {})
+        sim_result = alpha.get('result', {})
         
+        fitness = None
+        if isinstance(sim_result, dict):
+            result_data = sim_result.get('result', {})
+            if isinstance(result_data, dict):
+                metrics = result_data.get('metrics', {})
+                if isinstance(metrics, dict):
+                    fitness = metrics.get('fitness')
+        
+        expression = alpha_expr
+        model = config.get('model', 'unknown')
         # Record failure
         failure_record = {
             'timestamp': datetime.now().isoformat(),
@@ -163,11 +173,23 @@ class FeedbackLoopSystem:
         Args:
             alpha: Alpha dictionary with expression and metrics
         """
-        expression = alpha.get('expression', '')
-        fitness = alpha.get('fitness', 0)
-        model = alpha.get('model', 'unknown')
-        sharpe = alpha.get('sharpe', 0)
-        turnover = alpha.get('turnover', 0)
+        alpha_expr = alpha.get('expression', '')
+        sim_result = alpha.get('result', {})
+        
+        fitness = None
+        sharpe = None
+        turnover = None
+        if isinstance(sim_result, dict):
+            result_data = sim_result.get('result', {})
+            if isinstance(result_data, dict):
+                metrics = result_data.get('metrics', {})
+                if isinstance(metrics, dict):
+                    fitness = metrics.get('fitness')
+                    fitness = metrics.get('sharpe')
+                    fitness = metrics.get('turnover')
+        
+        expression = alpha_expr
+        model = config.get('model', 'unknown')
         
         # Record success
         success_record = {
